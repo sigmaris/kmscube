@@ -26,11 +26,14 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <fcntl.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <time.h>
+#include <unistd.h>
 
 #include <xf86drm.h>
 #include <xf86drmMode.h>
@@ -72,24 +75,12 @@ struct drm_fb {
 
 static int init_drm(void)
 {
-	static const char *modules[] = {
-			"i915", "radeon", "nouveau", "vmwgfx", "omapdrm", "exynos", "msm", "tegra"
-	};
 	drmModeRes *resources;
 	drmModeConnector *connector = NULL;
 	drmModeEncoder *encoder = NULL;
 	int i, area;
 
-	for (i = 0; i < ARRAY_SIZE(modules); i++) {
-		printf("trying to load module %s...", modules[i]);
-		drm.fd = drmOpen(modules[i], NULL);
-		if (drm.fd < 0) {
-			printf("failed.\n");
-		} else {
-			printf("success.\n");
-			break;
-		}
-	}
+	drm.fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
 
 	if (drm.fd < 0) {
 		printf("could not open drm device\n");
@@ -105,8 +96,9 @@ static int init_drm(void)
 	/* find a connected connector: */
 	for (i = 0; i < resources->count_connectors; i++) {
 		connector = drmModeGetConnector(drm.fd, resources->connectors[i]);
-		if (connector->connection == DRM_MODE_CONNECTED) {
-			/* it's connected, let's use this! */
+		if (connector->connection == DRM_MODE_CONNECTED
+			&& connector->count_modes > 0) {
+			/* it's connected and has modes, let's use this! */
 			break;
 		}
 		drmModeFreeConnector(connector);
@@ -558,6 +550,17 @@ static void page_flip_handler(int fd, unsigned int frame,
 	*waiting_for_flip = 0;
 }
 
+static long timeval_diff(struct timeval *start, struct timeval *stop) {
+	long secs = stop->tv_sec - start->tv_sec;
+	long usecs = 0;
+	if (stop->tv_usec > start->tv_usec) {
+		usecs = stop->tv_usec - start->tv_usec;
+	} else {
+		usecs = start->tv_usec - stop->tv_usec;
+	}
+	return (1000000 * secs) + usecs;
+}
+
 int main(int argc, char *argv[])
 {
 	fd_set fds;
@@ -607,46 +610,81 @@ int main(int argc, char *argv[])
 		return ret;
 	}
 
+	long drawtime = 0, swaptime = 0, locktime = 0, fliptime = 0, releasetime = 0;
+	struct timeval stop, start;
+
 	while (1) {
 		struct gbm_bo *next_bo;
 		int waiting_for_flip = 1;
 
+		gettimeofday(&start, NULL);
 		draw(i++);
+		gettimeofday(&stop, NULL);
+		drawtime = (drawtime + timeval_diff(&start, &stop)) / 2;
 
+		gettimeofday(&start, NULL);
 		eglSwapBuffers(gl.display, gl.surface);
+		gettimeofday(&stop, NULL);
+		swaptime = (swaptime + timeval_diff(&start, &stop)) / 2;
+
+		gettimeofday(&start, NULL);
 		next_bo = gbm_surface_lock_front_buffer(gbm.surface);
+		gettimeofday(&stop, NULL);
+		locktime = (locktime + timeval_diff(&start, &stop)) / 2;
+
 		fb = drm_fb_get_from_bo(next_bo);
 
 		/*
 		 * Here you could also update drm plane layers if you want
 		 * hw composition
 		 */
-
-		ret = drmModePageFlip(drm.fd, drm.crtc_id, fb->fb_id,
-				DRM_MODE_PAGE_FLIP_EVENT, &waiting_for_flip);
-		if (ret) {
-			printf("failed to queue page flip: %s\n", strerror(errno));
-			return -1;
-		}
-
-		while (waiting_for_flip) {
-			ret = select(drm.fd + 1, &fds, NULL, NULL, NULL);
-			if (ret < 0) {
-				printf("select err: %s\n", strerror(errno));
-				return ret;
-			} else if (ret == 0) {
-				printf("select timeout!\n");
+		gettimeofday(&start, NULL);
+		if (0) {
+			ret = drmModeSetCrtc(drm.fd, drm.crtc_id, fb->fb_id, 0, 0,
+					&drm.connector_id, 1, drm.mode);
+			if (ret) {
+				printf("failed to set new buffer: %s\n", strerror(errno));
 				return -1;
-			} else if (FD_ISSET(0, &fds)) {
-				printf("user interrupted!\n");
-				break;
 			}
-			drmHandleEvent(drm.fd, &evctx);
+		} else {
+			ret = drmModePageFlip(drm.fd, drm.crtc_id, fb->fb_id,
+					DRM_MODE_PAGE_FLIP_EVENT, &waiting_for_flip);
+			if (ret) {
+				printf("failed to queue page flip: %s\n", strerror(errno));
+				return -1;
+			}
+
+			while (waiting_for_flip) {
+				ret = select(drm.fd + 1, &fds, NULL, NULL, NULL);
+				if (ret < 0) {
+					printf("select err: %s\n", strerror(errno));
+					return ret;
+				} else if (ret == 0) {
+					printf("select timeout!\n");
+					return -1;
+				} else if (FD_ISSET(0, &fds)) {
+					printf("user interrupted!\n");
+					break;
+				}
+				drmHandleEvent(drm.fd, &evctx);
+			}
 		}
+		gettimeofday(&stop, NULL);
+		fliptime = (fliptime + timeval_diff(&start, &stop)) / 2;
 
 		/* release last buffer to render on again: */
+		gettimeofday(&start, NULL);
 		gbm_surface_release_buffer(gbm.surface, bo);
+		gettimeofday(&stop, NULL);
+		releasetime = (releasetime + timeval_diff(&start, &stop)) / 2;
 		bo = next_bo;
+
+		if (i % 120 == 0) {
+			printf(
+				" drawtime = %08ld\n swaptime = %08ld\n locktime = %08ld\n fliptime = %08ld\n reletime = %08ld\n",
+				drawtime, swaptime, locktime, fliptime, releasetime
+			);
+		}
 	}
 
 	return ret;
