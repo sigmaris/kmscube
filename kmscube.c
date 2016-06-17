@@ -44,6 +44,7 @@
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 
+#define VSYNC 1
 
 static struct {
 	EGLDisplay display;
@@ -64,6 +65,7 @@ static struct {
 static struct {
 	int fd;
 	drmModeModeInfo *mode;
+	drmModeCrtc *saved_crtc;
 	uint32_t crtc_id;
 	uint32_t connector_id;
 } drm;
@@ -144,6 +146,27 @@ static int init_drm(void)
 
 	drm.crtc_id = encoder->crtc_id;
 	drm.connector_id = connector->connector_id;
+	drm.saved_crtc = drmModeGetCrtc(drm.fd, encoder->crtc_id);
+
+	return 0;
+}
+
+static int deinit_drm(void)
+{
+	int ret;
+	// Restore original CRTC settings
+	ret = drmModeSetCrtc(drm.fd, drm.crtc_id, drm.saved_crtc->buffer_id,
+			drm.saved_crtc->x, drm.saved_crtc->y,
+			&drm.connector_id, 1, &drm.saved_crtc->mode);
+	if (ret) {
+		printf("warning: failed to restore original mode: %s\n", strerror(errno));
+	}
+	drmModeFreeCrtc(drm.fd, drm.saved_crtc);
+	ret = close(drm.fd);
+	if (ret) {
+		printf("failed to close DRM fd: %s\n", strerror(errno));
+		return ret;
+	}
 
 	return 0;
 }
@@ -162,6 +185,12 @@ static int init_gbm(void)
 	}
 
 	return 0;
+}
+
+static void deinit_gbm(void)
+{
+	gbm_surface_destroy(gbm.surface);
+	gbm_device_destroy(gbm.dev);
 }
 
 static int init_gl(void)
@@ -455,6 +484,34 @@ static int init_gl(void)
 	return 0;
 }
 
+static int deinit_gl(void)
+{
+	int ret = 0;
+	glDeleteBuffers(1, &gl.vbo);
+	glDeleteProgram(gl.program);
+	if(!eglMakeCurrent(gl.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT)) {
+		ret = (int)eglGetError();
+		printf("eglMakeCurrent error: %d\n", ret);
+		return ret;
+	}
+	if(!eglDestroySurface(gl.surface)) {
+		ret = (int)eglGetError();
+		printf("eglDestroySurface error: %d\n", ret);
+		return ret;
+	}
+	if(!eglDestroyContext(gl.display, gl.context)) {
+		ret = (int)eglGetError();
+		printf("eglDestroyContext error: %d\n", ret);
+		return ret;
+	}
+	if(!eglTerminate(gl.display)) {
+		ret = (int)eglGetError();
+		printf("eglTerminate error: %d\n", ret);
+		return ret;
+	}
+	return ret;
+}
+
 static void draw(uint32_t i)
 {
 	ESMatrix modelview;
@@ -563,6 +620,23 @@ static long timeval_diff(struct timeval *start, struct timeval *stop) {
 
 int main(int argc, char *argv[])
 {
+	int ret;
+	printf("Drawing 300 frames...\n");
+	ret = draw_some_frames(300);
+	if(ret) {
+		printf("Exiting with error.\n");
+		return ret;
+	}
+	printf("Drawing another 300 frames...\n");
+	ret = draw_some_frames(300);
+	if(ret) {
+		printf("Exiting with error.\n");
+	}
+	return ret;
+}
+
+int draw_some_frames(uint32_t num_frames)
+{
 	fd_set fds;
 	drmEventContext evctx = {
 			.version = DRM_EVENT_CONTEXT_VERSION,
@@ -571,7 +645,7 @@ int main(int argc, char *argv[])
 	struct gbm_bo *bo;
 	struct drm_fb *fb;
 	uint32_t i = 0;
-	int ret;
+	int ret = 0;
 
 	ret = init_drm();
 	if (ret) {
@@ -612,10 +686,10 @@ int main(int argc, char *argv[])
 
 	long drawtime = 0, swaptime = 0, locktime = 0, fliptime = 0, releasetime = 0;
 	struct timeval stop, start;
+	int waiting_for_flip = 0;
+	struct gbm_bo *next_bo;
 
-	while (1) {
-		struct gbm_bo *next_bo;
-		int waiting_for_flip = 1;
+	while (i < num_frames) {
 
 		gettimeofday(&start, NULL);
 		draw(i++);
@@ -639,7 +713,7 @@ int main(int argc, char *argv[])
 		 * hw composition
 		 */
 		gettimeofday(&start, NULL);
-		if (0) {
+		if (!VSYNC) {
 			ret = drmModeSetCrtc(drm.fd, drm.crtc_id, fb->fb_id, 0, 0,
 					&drm.connector_id, 1, drm.mode);
 			if (ret) {
@@ -647,6 +721,7 @@ int main(int argc, char *argv[])
 				return -1;
 			}
 		} else {
+			waiting_for_flip = 1;
 			ret = drmModePageFlip(drm.fd, drm.crtc_id, fb->fb_id,
 					DRM_MODE_PAGE_FLIP_EVENT, &waiting_for_flip);
 			if (ret) {
@@ -685,6 +760,22 @@ int main(int argc, char *argv[])
 				drawtime, swaptime, locktime, fliptime, releasetime
 			);
 		}
+	}
+
+	ret = deinit_gl();
+	if(ret) {
+		printf("failed to deinit GL: %d\n", ret);
+		return ret;
+	}
+	ret = deinit_gbm();
+	if(ret) {
+		printf("failed to deinit gbm: %d\n", ret);
+		return ret;
+	}
+	ret = deinit_drm();
+	if(ret) {
+		printf("failed to deinit drm: %d\n", ret);
+		return ret;
 	}
 
 	return ret;
