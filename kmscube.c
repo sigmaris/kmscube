@@ -161,7 +161,7 @@ static int deinit_drm(void)
 	if (ret) {
 		printf("warning: failed to restore original mode: %s\n", strerror(errno));
 	}
-	drmModeFreeCrtc(drm.fd, drm.saved_crtc);
+	drmModeFreeCrtc(drm.saved_crtc);
 	ret = close(drm.fd);
 	if (ret) {
 		printf("failed to close DRM fd: %s\n", strerror(errno));
@@ -494,7 +494,7 @@ static int deinit_gl(void)
 		printf("eglMakeCurrent error: %d\n", ret);
 		return ret;
 	}
-	if(!eglDestroySurface(gl.surface)) {
+	if(!eglDestroySurface(gl.display, gl.surface)) {
 		ret = (int)eglGetError();
 		printf("eglDestroySurface error: %d\n", ret);
 		return ret;
@@ -767,11 +767,7 @@ int draw_some_frames(uint32_t num_frames)
 		printf("failed to deinit GL: %d\n", ret);
 		return ret;
 	}
-	ret = deinit_gbm();
-	if(ret) {
-		printf("failed to deinit gbm: %d\n", ret);
-		return ret;
-	}
+	deinit_gbm();
 	ret = deinit_drm();
 	if(ret) {
 		printf("failed to deinit drm: %d\n", ret);
