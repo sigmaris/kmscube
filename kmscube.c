@@ -90,11 +90,11 @@ static void print_fds(void)
 		while((dir = readdir(d)) != NULL) {
 			if (dir->d_type == DT_LNK) {
 				char hardfile[maxlength];
-				int len;
+				ssize_t len;
 				char tempath[maxlength];
 
 				snprintf(tempath, maxlength, "%s%s", path, dir->d_name);
-				ssize_t len = readlink(tempath, hardfile, maxlength - 1);
+				len = readlink(tempath, hardfile, maxlength - 1);
 				if (len != -1) {
 					hardfile[len] = '\0';
 					printf("%s -> %s\n", dir->d_name, hardfile);
@@ -696,6 +696,8 @@ int main(int argc, char *argv[])
 		printf("Exiting with error.\n");
 		return ret;
 	}
+	printf("Sleeping...\n");
+	sleep(10);
 	printf("Drawing another 300 frames...\n");
 	ret = draw_some_frames(300);
 	if(ret) {
