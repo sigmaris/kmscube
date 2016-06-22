@@ -28,6 +28,7 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <fcntl.h>
+#include <dirent.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -75,6 +76,37 @@ struct drm_fb {
 	uint32_t fb_id;
 };
 
+static void print_fds(void)
+{
+	DIR *d;
+	const int maxlength = 256;
+	char path[maxlength];
+
+	snprintf(path, maxlength, "/proc/%i/fd/", getpid());
+
+	struct dirent *dir;
+	d = opendir(path);
+	if (d) {
+		while((dir = readdir(d)) != NULL) {
+			if (dir->d_type == DT_LNK) {
+				char hardfile[maxlength];
+				int len;
+				char tempath[maxlength];
+
+				snprintf(tempath, maxlength, "%s%s", path, dir->d_name);
+				ssize_t len = readlink(tempath, hardfile, maxlength - 1);
+				if (len != -1) {
+					hardfile[len] = '\0';
+					printf("%s -> %s\n", dir->d_name, hardfile);
+				} else {
+					printf("error when executing readlink() on %s\n",tempath);
+				}
+			}
+		}
+		closedir(d);
+	}
+}
+
 static int init_drm(void)
 {
 	drmModeRes *resources;
@@ -88,6 +120,9 @@ static int init_drm(void)
 		printf("could not open drm device\n");
 		return -1;
 	}
+
+	printf("After open(), fds:\n");
+	print_fds();
 
 	resources = drmModeGetResources(drm.fd);
 	if (!resources) {
@@ -167,6 +202,8 @@ static int deinit_drm(void)
 		printf("failed to close DRM fd: %s\n", strerror(errno));
 		return ret;
 	}
+	printf("After close(), fds:\n");
+	print_fds();
 
 	return 0;
 }
@@ -174,6 +211,8 @@ static int deinit_drm(void)
 static int init_gbm(void)
 {
 	gbm.dev = gbm_create_device(drm.fd);
+	printf("After gbm_create_device(), fds:\n");
+	print_fds();
 
 	gbm.surface = gbm_surface_create(gbm.dev,
 			drm.mode->hdisplay, drm.mode->vdisplay,
@@ -183,6 +222,8 @@ static int init_gbm(void)
 		printf("failed to create gbm surface\n");
 		return -1;
 	}
+	printf("After gbm_surface_create(), fds:\n");
+	print_fds();
 
 	return 0;
 }
@@ -190,7 +231,12 @@ static int init_gbm(void)
 static void deinit_gbm(void)
 {
 	gbm_surface_destroy(gbm.surface);
+	printf("After gbm_surface_destroy(), fds:\n");
+	print_fds();
+
 	gbm_device_destroy(gbm.dev);
+	printf("After gbm_device_destroy(), fds:\n");
+	print_fds();
 }
 
 static int init_gl(void)
@@ -348,11 +394,15 @@ static int init_gl(void)
 			"}                                  \n";
 
 	gl.display = eglGetDisplay(gbm.dev);
+	printf("After eglGetDisplay(), fds:\n");
+	print_fds();
 
 	if (!eglInitialize(gl.display, &major, &minor)) {
 		printf("failed to initialize\n");
 		return -1;
 	}
+	printf("After eglInitialize(), fds:\n");
+	print_fds();
 
 	printf("Using display %p with EGL version %d.%d\n",
 			gl.display, major, minor);
@@ -378,14 +428,22 @@ static int init_gl(void)
 		return -1;
 	}
 
+	printf("After eglCreateContext(), fds:\n");
+	print_fds();
+
 	gl.surface = eglCreateWindowSurface(gl.display, gl.config, gbm.surface, NULL);
 	if (gl.surface == EGL_NO_SURFACE) {
 		printf("failed to create egl surface\n");
 		return -1;
 	}
 
+	printf("After eglCreateWindowSurface(), fds:\n");
+	print_fds();
+
 	/* connect the context to the surface */
 	eglMakeCurrent(gl.display, gl.surface, gl.surface, gl.context);
+	printf("After eglMakeCurrent(), fds:\n");
+	print_fds();
 
 
 	vertex_shader = glCreateShader(GL_VERTEX_SHADER);
@@ -499,16 +557,22 @@ static int deinit_gl(void)
 		printf("eglDestroySurface error: %d\n", ret);
 		return ret;
 	}
+	printf("After eglDestroySurface(), fds:\n");
+	print_fds();
 	if(!eglDestroyContext(gl.display, gl.context)) {
 		ret = (int)eglGetError();
 		printf("eglDestroyContext error: %d\n", ret);
 		return ret;
 	}
+	printf("After eglDestroyContext(), fds:\n");
+	print_fds();
 	if(!eglTerminate(gl.display)) {
 		ret = (int)eglGetError();
 		printf("eglTerminate error: %d\n", ret);
 		return ret;
 	}
+	printf("After eglTerminate(), fds:\n");
+	print_fds();
 	return ret;
 }
 
@@ -568,6 +632,9 @@ drm_fb_destroy_callback(struct gbm_bo *bo, void *data)
 	if (fb->fb_id)
 		drmModeRmFB(drm.fd, fb->fb_id);
 
+	printf("After drmModeRmFB(), fds:\n");
+	print_fds();
+
 	free(fb);
 }
 
@@ -594,6 +661,8 @@ static struct drm_fb * drm_fb_get_from_bo(struct gbm_bo *bo)
 		free(fb);
 		return NULL;
 	}
+	printf("After drmModeAddFB(), fds:\n");
+	print_fds();
 
 	gbm_bo_set_user_data(bo, fb, drm_fb_destroy_callback);
 
@@ -647,6 +716,8 @@ int draw_some_frames(uint32_t num_frames)
 	uint32_t i = 0;
 	int ret = 0;
 
+	printf("before init_drm(), fds:\n");
+	print_fds();
 	ret = init_drm();
 	if (ret) {
 		printf("failed to initialize DRM\n");
@@ -657,23 +728,32 @@ int draw_some_frames(uint32_t num_frames)
 	FD_SET(0, &fds);
 	FD_SET(drm.fd, &fds);
 
+	printf("before init_gbm(), fds:\n");
+	print_fds();
 	ret = init_gbm();
 	if (ret) {
 		printf("failed to initialize GBM\n");
 		return ret;
 	}
 
+	printf("before init_gl(), fds:\n");
+	print_fds();
 	ret = init_gl();
 	if (ret) {
 		printf("failed to initialize EGL\n");
 		return ret;
 	}
+	printf("After init_gl(), fds:\n");
+	print_fds();
 
 	/* clear the color buffer */
 	glClearColor(0.5, 0.5, 0.5, 1.0);
 	glClear(GL_COLOR_BUFFER_BIT);
 	eglSwapBuffers(gl.display, gl.surface);
 	bo = gbm_surface_lock_front_buffer(gbm.surface);
+	printf("After gbm_surface_lock_front_buffer(), fds:\n");
+	print_fds();
+
 	fb = drm_fb_get_from_bo(bo);
 
 	/* set mode: */
@@ -683,6 +763,8 @@ int draw_some_frames(uint32_t num_frames)
 		printf("failed to set mode: %s\n", strerror(errno));
 		return ret;
 	}
+	printf("After first drmModeSetCrtc(), fds:\n");
+	print_fds();
 
 	long drawtime = 0, swaptime = 0, locktime = 0, fliptime = 0, releasetime = 0;
 	struct timeval stop, start;
@@ -754,20 +836,28 @@ int draw_some_frames(uint32_t num_frames)
 		releasetime = (releasetime + timeval_diff(&start, &stop)) / 2;
 		bo = next_bo;
 
-		if (i % 120 == 0) {
-			printf(
-				" drawtime = %08ld\n swaptime = %08ld\n locktime = %08ld\n fliptime = %08ld\n reletime = %08ld\n",
-				drawtime, swaptime, locktime, fliptime, releasetime
-			);
-		}
+		// if (i % 120 == 0) {
+		// 	printf(
+		// 		" drawtime = %08ld\n swaptime = %08ld\n locktime = %08ld\n fliptime = %08ld\n reletime = %08ld\n",
+		// 		drawtime, swaptime, locktime, fliptime, releasetime
+		// 	);
+		// }
 	}
+	printf("before deinit_gl(), fds:\n");
+	print_fds();
 
 	ret = deinit_gl();
 	if(ret) {
 		printf("failed to deinit GL: %d\n", ret);
 		return ret;
 	}
+
+	printf("before deinit_gbm(), fds:\n");
+	print_fds();
 	deinit_gbm();
+
+	printf("After deinit_drm(), fds:\n");
+	print_fds();
 	ret = deinit_drm();
 	if(ret) {
 		printf("failed to deinit drm: %d\n", ret);
