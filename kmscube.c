@@ -133,6 +133,18 @@ static int init_drm(void)
 	/* find a connected connector: */
 	for (i = 0; i < resources->count_connectors; i++) {
 		connector = drmModeGetConnector(drm.fd, resources->connectors[i]);
+		printf("connector %u current encoder %u\n", connector->connector_id, connector->encoder_id);
+		printf("connector %u can use encoders:", connector->connector_id);
+		for (j = 0, j < connector->count_encoders; j++) {
+			printf("%u, ", connector->encoders[j]);
+		}
+		printf("\n");
+		drmModeFreeConnector(connector);
+		connector = NULL;
+	}
+
+	for (i = 0; i < resources->count_connectors; i++) {
+		connector = drmModeGetConnector(drm.fd, resources->connectors[i]);
 		if (connector->connection == DRM_MODE_CONNECTED
 			&& connector->count_modes > 0) {
 			/* it's connected and has modes, let's use this! */
@@ -166,6 +178,15 @@ static int init_drm(void)
 	}
 
 	/* find encoder: */
+	for (i = 0; i < resources->count_encoders; i++) {
+		encoder = drmModeGetEncoder(drm.fd, resources->encoders[i]);
+		printf("encoder %u has CRTC %u\n", encoder->encoder_id, encoder->crtc_id);
+		printf("encoder %u possible CRTCs: %x\n", encoder->encoder_id, encoder->possible_crtcs);
+		printf("encoder %u possible clones: %x\n", encoder->encoder_id, encoder->possible_clones);
+		drmModeFreeEncoder(encoder);
+		encoder = NULL;
+	}
+
 	for (i = 0; i < resources->count_encoders; i++) {
 		encoder = drmModeGetEncoder(drm.fd, resources->encoders[i]);
 		if (encoder->encoder_id == connector->encoder_id)
