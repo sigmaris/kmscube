@@ -135,7 +135,7 @@ static int init_drm(void)
 		connector = drmModeGetConnector(drm.fd, resources->connectors[i]);
 		printf("connector %u current encoder %u\n", connector->connector_id, connector->encoder_id);
 		printf("connector %u can use encoders:", connector->connector_id);
-		for (j = 0, j < connector->count_encoders; j++) {
+		for (j = 0; j < connector->count_encoders; j++) {
 			printf("%u, ", connector->encoders[j]);
 		}
 		printf("\n");
