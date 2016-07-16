@@ -112,7 +112,7 @@ static int init_drm(void)
 	drmModeRes *resources;
 	drmModeConnector *connector = NULL;
 	drmModeEncoder *encoder = NULL;
-	int i, area;
+	int i, j, area;
 
 	drm.fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
 
